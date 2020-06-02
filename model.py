@@ -1,4 +1,6 @@
 import numpy as np
+import torch
+import torch.nn as nn
 
 def make_envelope_1d(s, lcl_phases, lcl_patterns, weights):
     """Returns a function of theta that computes the complex far-field envelope.
@@ -42,3 +44,36 @@ def make_score_fn(s, fixed_phases, lcl_patterns, theta_vals):
         return power_score(target_power, power(env, theta_vals))
     
     return score
+
+
+
+class model1D(nn.Module):
+
+    def __init__(self, input_length, output_length):
+        super().__init__()
+        self.input_length = input_length
+        self.output_length = output_length
+
+        assert input_length % 4 == 0
+
+        self.output_dim = 256
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=3,padding=1)
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool1d(2)
+        self.linear = nn.Linear(self.input_length // 4, self.output_length)
+        self.phase_head = nn.Linear(64, self.output_dim)
+        self.wt_head = nn.Linear(64, self.output_dim)
+
+    def forward(self, p):
+        """p = (batchsize, array_length) array of power vals"""
+        #input N,C,L
+        y = self.conv1(p.unsqueeze(1)).relu()
+        y = self.pool(y)
+        y = self.conv2(y).relu()
+        y = self.pool(y)
+        # batchsize, length, hiddendim
+        y = self.linear(y).permute(0, 2, 1)
+
+        phase_logits = self.phase_head(y)
+        wt_logits = self.wt_head(y)
+        return phase_logits, wt_logits
