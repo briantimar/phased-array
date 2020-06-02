@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.distributions.categorical import Categorical
 
 def make_envelope_1d(s, lcl_phases, lcl_patterns, weights):
     """Returns a function of theta that computes the complex far-field envelope.
@@ -29,19 +30,33 @@ def power(env_fn, theta_vals):
     """Given an envelope function, returns the power at each of the specified angles"""
     return np.asarray([np.abs(env_fn(t))**2 for t in theta_vals])
 
-def power_score(target_power, output_power):
-    """Score of a given model power distribution, given a desired target. higher is better!"""
-    return np.sum((target_power - output_power)**2)
+def power_loss(target_power, output_power):
+    """Score of a given model power distribution, given a desired target. lower is better!"""
+    target_power /= np.sum(target_power)
+    output_power /= np.sum(output_power)
 
-def make_score_fn(s, fixed_phases, lcl_patterns, theta_vals):
+    return - np.sum(target_power * np.log(output_power))
+
+def make_loss_fn(s, fixed_phases, lcl_patterns, theta_vals):
     """ Returns a function which will compute a score given: 
         - target power distribution
         - power weights sampled from model
         - phases sampled from model
         """
     def score(model_phases, model_weights, target_power):
-        env = make_envelope_1d(s, fixed_phases + model_phases, lcl_patterns, model_weights)
-        return power_score(target_power, power(env, theta_vals))
+        """ model_phases: (batch, N) array of phase values
+            model_weights: (batch, N) array of emitter weights
+            target_power: (batch, num_theta) array of target power values.
+            returns: (batch,) tensor of loss values.
+            """
+        batch_size, N = model_phases.shape
+        losses = []
+        for i in range(batch_size):
+            env = make_envelope_1d(s, fixed_phases + model_phases[i, :], lcl_patterns, 
+                                        model_weights[i, :])
+
+            losses.append(power_loss(target_power, power(env, theta_vals)))
+        return np.asarray(losses)
     
     return score
 
@@ -64,6 +79,8 @@ class model1D(nn.Module):
         self.phase_head = nn.Linear(64, self.output_dim)
         self.wt_head = nn.Linear(64, self.output_dim)
 
+        self.problayer = nn.LogSoftmax(dim=2)
+
     def forward(self, p):
         """p = (batchsize, array_length) array of power vals"""
         #input N,C,L
@@ -76,4 +93,8 @@ class model1D(nn.Module):
 
         phase_logits = self.phase_head(y)
         wt_logits = self.wt_head(y)
-        return phase_logits, wt_logits
+ 
+        phase_dist = Categorical(logits= phase_logits)
+        wt_dist = Categorical(logits=wt_logits)
+        
+        return phase_dist, wt_dist
